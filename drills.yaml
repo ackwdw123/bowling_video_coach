@@ -1,0 +1,73 @@
+drills:
+  - name: "No-step swing drill"
+    tags: ["late_timing", "muscling", "inconsistent_swing"]
+    where: "home"
+    solo: true
+    steps:
+      - "Assume athletic posture (knees soft, chest slightly over knees)."
+      - "Hold ball in stance position and let it fall into a free swing."
+      - "Feel gravity start the swing; do NOT pull down."
+      - "Repeat with smooth tempo; keep shoulders quiet."
+    reps: "3 sets of 10 swings"
+    success: "Swing feels effortless; ball path stays close to the body line."
+
+  - name: "One-step release drill"
+    tags: ["late_timing", "release", "loft_control"]
+    where: "lanes"
+    solo: true
+    steps:
+      - "Stand at the foul line with slide foot slightly behind."
+      - "Take one small step/slide and deliver the ball."
+      - "Focus on clean thumb exit (1H) or clean hand position (2H)."
+      - "Hold the finish for a 2-count (post the shot)."
+    reps: "20 shots"
+    success: "Cleaner release + improved accuracy; balanced finish without falling off."
+
+  - name: "Walk-to-the-line posting drill"
+    tags: ["balance", "posting", "falling_off"]
+    where: "lanes"
+    solo: true
+    steps:
+      - "Use a reduced-speed approach (50–60%)."
+      - "Deliver the ball and freeze at the line for 2 full seconds."
+      - "Eyes stay on target; head stays level."
+      - "If you can’t hold it, reduce speed further and repeat."
+    reps: "3 games or 30 shots"
+    success: "Stable finish position; reduced pull or bail-out."
+
+  - name: "Metronome footwork timing"
+    tags: ["tempo", "late_timing", "early_timing"]
+    where: "home"
+    solo: true
+    steps:
+      - "Use a metronome app (start around 72–84 BPM)."
+      - "Practice approach steps in rhythm without the ball first."
+      - "Add the ball; start pushaway with step 1 (most bowlers)."
+      - "Keep tempo consistent; avoid rushing the last 2 steps."
+    reps: "5 minutes daily"
+    success: "More repeatable timing; fewer ‘rushed’ shots."
+
+  - name: "Line-walk targeting (3-6-9)"
+    tags: ["targeting", "miss_right", "miss_left"]
+    where: "lanes"
+    solo: true
+    steps:
+      - "Pick a breakpoint and target (arrows/dots)."
+      - "Throw 5 shots at each zone: 3-board move, 6-board move, 9-board move."
+      - "Keep the same target; adjust feet only."
+      - "Write down which move is most repeatable."
+    reps: "15 shots"
+    success: "Improved adjustments and reduced overcorrections."
+
+  - name: "Trail-leg check (balance line)"
+    tags: ["balance", "pulling", "opening_shoulders"]
+    where: "home"
+    solo: true
+    steps:
+      - "Practice your finish position without the ball."
+      - "Ensure trail leg is behind and slightly to the side, toe pointed down."
+      - "Hips under you; chest over knee; head stable."
+      - "Add a slow swing motion without releasing."
+    reps: "2 sets of 8"
+    success: "Finish feels stacked; less shoulder yank and better direction."
+
