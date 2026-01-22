@@ -3,7 +3,6 @@ import tempfile
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import List, Dict, Any, Tuple
-from io import BytesIO
 
 import cv2
 import numpy as np
@@ -13,7 +12,6 @@ import yaml
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
 
 
 # -----------------------------
@@ -81,6 +79,7 @@ def extract_frames(video_path: str, num_frames: int = 20) -> FramePack:
         if ok and frame is not None:
             frames.append(frame)
         else:
+            # placeholder if a frame can't be read
             frames.append(np.zeros((720, 1280, 3), dtype=np.uint8))
 
     cap.release()
@@ -91,46 +90,21 @@ def bgr_to_rgb(frame_bgr: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
 
-def make_thumbnail_png_bytes(frame_bgr: np.ndarray, max_w: int = 420) -> bytes:
-    """
-    Create a PNG thumbnail (bytes) from a BGR frame using OpenCV only.
-    """
-    h, w = frame_bgr.shape[:2]
-    if w > max_w:
-        scale = max_w / float(w)
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        thumb = cv2.resize(frame_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    else:
-        thumb = frame_bgr
-
-    ok, buf = cv2.imencode(".png", thumb)
-    if not ok:
-        raise ValueError("Failed to encode thumbnail image.")
-    return buf.tobytes()
-
-
-def choose_thumbnail_indices(frame_indices: List[int], max_thumbs: int = 8) -> List[int]:
-    """
-    Pick up to max_thumbs evenly spaced indices from the sampled frames.
-    """
-    n = len(frame_indices)
-    if n <= max_thumbs:
-        return list(range(n))
-    picks = np.linspace(0, n - 1, max_thumbs).astype(int).tolist()
-    return picks
-
-
 # -----------------------------
 # Coach logic (rule-based v1)
 # -----------------------------
 def infer_tags(ctx: BowlerContext) -> List[str]:
+    """
+    Convert user-provided symptoms into normalized tags.
+    This is v1 and intentionally simple; later you can incorporate pose metrics.
+    """
     tags = []
 
     miss = (ctx.typical_miss or "").lower()
     leave = (ctx.leave or "").lower()
     view = (ctx.camera_view or "").lower()
 
+    # Miss direction
     if "right" in miss or "miss right" in miss:
         tags.append("miss_right")
     if "left" in miss or "miss left" in miss:
@@ -140,7 +114,9 @@ def infer_tags(ctx: BowlerContext) -> List[str]:
     if "light" in miss:
         tags.append("light_hit")
 
+    # Leaves / ball reaction cues
     if "10" in leave:
+        # could be flat 10 or corner 10 - both often match release/entry angle issues
         tags.append("leave_10")
         if "flat" in leave:
             tags.append("flat_10")
@@ -149,6 +125,7 @@ def infer_tags(ctx: BowlerContext) -> List[str]:
     if "bucket" in leave:
         tags.append("bucket_leave")
 
+    # Common coaching buckets based on typical complaints
     if "inconsistent" in miss or "all over" in miss or "spray" in miss:
         tags.append("targeting")
         tags.append("tempo")
@@ -160,26 +137,34 @@ def infer_tags(ctx: BowlerContext) -> List[str]:
     if "early" in miss:
         tags.append("early_timing")
 
+    # If they mention balance in notes
     notes = (ctx.notes or "").lower()
     if "balance" in notes or "falling" in notes or "fall off" in notes:
         tags.append("balance")
         tags.append("posting")
 
+    # If no strong signal, default to fundamentals
     if not tags:
         tags = ["targeting", "tempo", "balance"]
 
+    # Camera hint (if not side, suggest what to film next)
     if "side" not in view:
         tags.append("need_side_view")
 
+    # style-specific nuance
     if ctx.style == "2H":
         tags.append("two_handed")
     else:
         tags.append("one_handed")
 
+    # de-dupe
     return sorted(set(tags))
 
 
 def select_drills(drills: List[Dict[str, Any]], tags: List[str], where: str) -> List[Dict[str, Any]]:
+    """
+    Select drills matching tags and location constraint (home/lanes).
+    """
     scored = []
     for d in drills:
         d_tags = set(d.get("tags", []))
@@ -191,12 +176,16 @@ def select_drills(drills: List[Dict[str, Any]], tags: List[str], where: str) -> 
         scored.append((score, d))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [d for _, d in scored[:3]]
+    return [d for _, d in scored[:3]]  # top 3 per location
 
 
-def build_priorities(tags: List[str]) -> List[Dict[str, Any]]:
+def build_priorities(tags: List[str], ctx: BowlerContext) -> List[Dict[str, Any]]:
+    """
+    Translate tags into a coach-style prioritized list.
+    """
     priorities = []
 
+    # Timing
     if "late_timing" in tags:
         priorities.append({
             "issue": "Timing appears late (ball arrives after the slide / body gets ahead of the ball).",
@@ -223,6 +212,7 @@ def build_priorities(tags: List[str]) -> List[Dict[str, Any]]:
             "confirm_next": "Film side view; look for ball at top of backswing occurring near step 3–4 (5-step approach)."
         })
 
+    # Directional misses / targeting
     if "miss_right" in tags:
         priorities.append({
             "issue": "Miss trend: right (often from projection, timing, or early opening).",
@@ -249,6 +239,7 @@ def build_priorities(tags: List[str]) -> List[Dict[str, Any]]:
             "confirm_next": "Film behind view + side view to see shoulder timing."
         })
 
+    # Balance/posting
     if "balance" in tags or "posting" in tags:
         priorities.append({
             "issue": "Finish/posting needs strengthening (stability at the line).",
@@ -262,6 +253,7 @@ def build_priorities(tags: List[str]) -> List[Dict[str, Any]]:
             "confirm_next": "Film side view; check if head stays level through release."
         })
 
+    # If nothing got added (rare), add a fundamentals priority
     if not priorities:
         priorities.append({
             "issue": "Fundamentals focus: repeatable tempo + targeting.",
@@ -275,12 +267,13 @@ def build_priorities(tags: List[str]) -> List[Dict[str, Any]]:
             "confirm_next": "Film side view and behind view for a complete baseline."
         })
 
+    # Keep it “Gold coach style”: max 3 priorities
     return priorities[:3]
 
 
-def generate_report(ctx: BowlerContext, drills: List[Dict[str, Any]], thumbnails: List[Dict[str, Any]]) -> Dict[str, Any]:
+def generate_report(ctx: BowlerContext, drills: List[Dict[str, Any]]) -> Dict[str, Any]:
     tags = infer_tags(ctx)
-    priorities = build_priorities(tags)
+    priorities = build_priorities(tags, ctx)
 
     home_drills = select_drills(drills, tags, where="home")
     lane_drills = select_drills(drills, tags, where="lanes")
@@ -290,6 +283,7 @@ def generate_report(ctx: BowlerContext, drills: List[Dict[str, Any]], thumbnails
         "Film 3 shots from the same angle every session to track progress.",
         "Hold your finish for a 2-count on all practice shots."
     ]
+
     if "need_side_view" in tags:
         quick_wins.insert(0, "If possible, re-film from the SIDE (waist height) showing feet + ball the whole approach.")
 
@@ -303,7 +297,6 @@ def generate_report(ctx: BowlerContext, drills: List[Dict[str, Any]], thumbnails
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "tags": tags,
         "context": asdict(ctx),
-        "thumbnails": thumbnails,  # [{frame_index:int, png_bytes:bytes}]
         "priorities": priorities,
         "home_drills": home_drills,
         "lane_drills": lane_drills,
@@ -313,9 +306,12 @@ def generate_report(ctx: BowlerContext, drills: List[Dict[str, Any]], thumbnails
 
 
 # -----------------------------
-# PDF helpers
+# PDF report
 # -----------------------------
 def wrap_text(c: canvas.Canvas, text: str, x: float, y: float, max_width: float, line_height: float) -> float:
+    """
+    Draw wrapped text and return the new y position.
+    """
     words = text.split()
     line = ""
     for w in words:
@@ -330,65 +326,6 @@ def wrap_text(c: canvas.Canvas, text: str, x: float, y: float, max_width: float,
         c.drawString(x, y, line)
         y -= line_height
     return y
-
-
-def draw_thumbnail_grid(
-    c: canvas.Canvas,
-    thumbs: List[Dict[str, Any]],
-    x: float,
-    y: float,
-    page_width: float,
-    margin: float,
-    cols: int = 4,
-    thumb_w: float = 1.7 * inch,
-    thumb_h: float = 1.0 * inch,
-    pad_x: float = 0.2 * inch,
-    pad_y: float = 0.35 * inch,
-) -> float:
-    """
-    Draw a grid of thumbnails with small frame labels. Returns updated y.
-    """
-    if not thumbs:
-        c.setFont("Helvetica", 10)
-        c.drawString(x, y, "No thumbnails available.")
-        return y - 14
-
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(x, y, "Thumbnails (Sampled Frames)")
-    y -= 0.25 * inch
-
-    col = 0
-    start_x = x
-    current_y = y
-
-    for t in thumbs:
-        if current_y < margin + thumb_h + 0.6 * inch:
-            c.showPage()
-            current_y = letter[1] - margin
-            c.setFont("Helvetica-Bold", 12)
-            c.drawString(x, current_y, "Thumbnails (Sampled Frames) — continued")
-            current_y -= 0.25 * inch
-
-        img = ImageReader(BytesIO(t["png_bytes"]))
-        c.drawImage(img, start_x, current_y - thumb_h, width=thumb_w, height=thumb_h, preserveAspectRatio=True, anchor='sw')
-
-        c.setFont("Helvetica", 8)
-        c.drawString(start_x, current_y - thumb_h - 10, f"Frame {t['frame_index']}")
-        c.setFont("Helvetica", 10)
-
-        col += 1
-        if col >= cols:
-            col = 0
-            start_x = x
-            current_y -= (thumb_h + pad_y)
-        else:
-            start_x += (thumb_w + pad_x)
-
-    # move y below the grid
-    if col != 0:
-        current_y -= (thumb_h + pad_y)
-
-    return current_y
 
 
 def make_pdf(report: Dict[str, Any], output_path: str) -> None:
@@ -408,8 +345,6 @@ def make_pdf(report: Dict[str, Any], output_path: str) -> None:
     y -= 0.25 * inch
 
     ctx = report["context"]
-
-    # Context
     c.setFont("Helvetica-Bold", 12)
     c.drawString(x, y, "Bowler Context")
     y -= 0.18 * inch
@@ -437,31 +372,13 @@ def make_pdf(report: Dict[str, Any], output_path: str) -> None:
 
     y -= 0.15 * inch
 
-    # Thumbnails
-    y = draw_thumbnail_grid(
-        c=c,
-        thumbs=report.get("thumbnails", []),
-        x=x,
-        y=y,
-        page_width=width,
-        margin=margin,
-        cols=4,
-        thumb_w=1.7 * inch,
-        thumb_h=1.0 * inch,
-    )
-    y -= 0.15 * inch
-
     # Priorities
-    if y < margin + 2.2 * inch:
-        c.showPage()
-        y = height - margin
-
     c.setFont("Helvetica-Bold", 12)
     c.drawString(x, y, "Coach Priorities (Top 3)")
     y -= 0.2 * inch
 
     for i, p in enumerate(report["priorities"], start=1):
-        if y < margin + 2.0 * inch:
+        if y < margin + 2 * inch:
             c.showPage()
             y = height - margin
 
@@ -486,7 +403,7 @@ def make_pdf(report: Dict[str, Any], output_path: str) -> None:
         y = wrap_text(c, f"Film next: {p['confirm_next']}", x, y, width - 2 * margin, 12)
         y -= 0.12 * inch
 
-    # Drills section helper
+    # Drills
     def render_drill_block(title: str, drill_list: List[Dict[str, Any]], y: float) -> float:
         nonlocal c
         if y < margin + 2 * inch:
@@ -558,6 +475,7 @@ def make_pdf(report: Dict[str, Any], output_path: str) -> None:
 st.set_page_config(page_title="Bowling Video Coach", layout="wide")
 st.title("🎳 Bowling Video Coach (Local v1)")
 
+# Load drill library
 DRILLS_PATH = "drills.yaml"
 if not os.path.exists(DRILLS_PATH):
     st.error("Missing drills.yaml in the same folder as app.py")
@@ -596,6 +514,7 @@ if uploaded:
         notes=notes.strip()
     )
 
+    # Save upload to temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
         tmp.write(uploaded.read())
         video_path = tmp.name
@@ -608,14 +527,12 @@ if uploaded:
         st.subheader("Frame sampling")
         num_frames = st.slider("Frames to sample for preview", 8, 40, 20)
         show_frames = st.checkbox("Show sampled frames", value=True)
-        thumbs_in_pdf = st.slider("Thumbnails to embed in PDF", 0, 12, 8)
 
     if st.button("Analyze + Generate Report"):
         try:
             with st.spinner("Extracting frames..."):
                 framepack = extract_frames(video_path, num_frames=num_frames)
 
-            # Show sampled frames in UI
             if show_frames:
                 st.subheader("Sampled frames (for quick visual reference)")
                 cols = st.columns(4)
@@ -623,17 +540,8 @@ if uploaded:
                     with cols[i % 4]:
                         st.image(bgr_to_rgb(frame), caption=f"Frame {idx}", use_container_width=True)
 
-            # Build thumbnails for PDF
-            thumbnails: List[Dict[str, Any]] = []
-            if thumbs_in_pdf > 0:
-                picks = choose_thumbnail_indices(framepack.frame_indices, max_thumbs=thumbs_in_pdf)
-                for p in picks:
-                    frame_idx = framepack.frame_indices[p]
-                    png_bytes = make_thumbnail_png_bytes(framepack.frames_bgr[p], max_w=520)
-                    thumbnails.append({"frame_index": frame_idx, "png_bytes": png_bytes})
-
             with st.spinner("Generating coach report..."):
-                report = generate_report(ctx, drills, thumbnails=thumbnails)
+                report = generate_report(ctx, drills)
 
             st.success("Report generated.")
 
@@ -677,14 +585,14 @@ if uploaded:
                 st.write(f"- {s}")
 
             # Make PDF
-            with st.spinner("Building PDF (with thumbnails)..."):
+            with st.spinner("Building PDF..."):
                 pdf_name = f"bowling_coach_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
                 pdf_path = os.path.join(tempfile.gettempdir(), pdf_name)
                 make_pdf(report, pdf_path)
 
             with open(pdf_path, "rb") as f:
                 st.download_button(
-                    label="⬇️ Download PDF Report (with thumbnails)",
+                    label="⬇️ Download PDF Report",
                     data=f,
                     file_name=pdf_name,
                     mime="application/pdf"
@@ -693,6 +601,7 @@ if uploaded:
         except Exception as e:
             st.error(f"Error: {e}")
         finally:
+            # Best-effort cleanup
             try:
                 os.remove(video_path)
             except Exception:
